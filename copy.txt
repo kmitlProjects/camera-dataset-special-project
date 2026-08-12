@@ -1,0 +1,2 @@
+python3 -c "import libcamera; print('libcamera ok')"
+python3 -c "from picamera2 import Picamera2; print('picamera2 ok')"
