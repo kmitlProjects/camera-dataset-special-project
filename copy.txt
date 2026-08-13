@@ -1,2 +1,2 @@
-python3 -c "import libcamera; print('libcamera ok')"
-python3 -c "from picamera2 import Picamera2; print('picamera2 ok')"
+cd /home/pi/Documents/CameraDataset
+DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority .venv/bin/python ncnn_dataset_capture.py

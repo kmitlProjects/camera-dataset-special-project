@@ -40,7 +40,7 @@ yolo export model=yolov8n.pt format=ncnn imgsz=640
 
 ### 2) คัดลอก model ไปยัง Raspberry Pi
 ```
-scp -r yolov8n_ncnn_model pi@<raspberrypi-ip>:/home/pi/Documents/Test/models/
+scp -r yolov8n_ncnn_model pi@<raspberrypi-ip>:/home/pi/Documents/CameraDataset/exported_models/
 ```
 
 ### 3) ติดตั้ง dependencies บน Pi
@@ -61,7 +61,7 @@ python3 -m pip install ncnn
 ## โครงสร้างแอปที่ควรมี
 
 ```text
-Test/
+CameraDataset/
   models/
     yolov8n.param
     yolov8n.bin
