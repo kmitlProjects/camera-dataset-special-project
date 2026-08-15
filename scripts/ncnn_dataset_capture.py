@@ -490,11 +490,20 @@ class ControlPanel:
     def _open_file_manager(self) -> None:
         if self.manager is not None and self.manager.winfo_exists():
             self.manager.lift()
+            self.manager.focus_force()
             return
         self.manager = tk.Toplevel(self.root)
         self.manager.title("Storage File Manager")
         self.manager.geometry("700x390")
         self.manager.resizable(False, False)
+        # Keep this window modal to the Tk part of the application.  Without a
+        # grab, a click over an overlapping control-panel button can also be
+        # delivered to the window behind the file manager on some lightweight
+        # Raspberry Pi window managers.
+        self.manager.transient(self.root)
+        self.manager.protocol("WM_DELETE_WINDOW", self._close_file_manager)
+        self.manager.grab_set()
+        self.manager.focus_force()
         tk.Label(self.manager, text="Folders in storage").grid(row=0, column=0, padx=8, pady=6)
         tk.Label(self.manager, text="Images").grid(row=0, column=1, padx=8, pady=6)
         self.folder_list = tk.Listbox(
@@ -548,6 +557,20 @@ class ControlPanel:
         self._storage_snapshot = self._make_storage_snapshot()
         self.manager.after(500, self._auto_refresh_manager)
         log_action("Opened storage file manager")
+
+    def _close_file_manager(self) -> None:
+        if self.manager is None:
+            return
+        try:
+            if self.manager.winfo_exists():
+                if self.manager.grab_current() == self.manager:
+                    self.manager.grab_release()
+                self.manager.destroy()
+        except tk.TclError:
+            pass
+        finally:
+            self.manager = None
+        log_action("Closed storage file manager")
 
     def _folders(self) -> List[str]:
         return sorted(path.name for path in self.storage_root.iterdir() if path.is_dir())
@@ -889,6 +912,7 @@ class ControlPanel:
             self._quit_requested = True
 
     def close(self) -> None:
+        self._close_file_manager()
         try:
             self.root.destroy()
         except tk.TclError:
