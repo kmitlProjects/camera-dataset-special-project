@@ -52,6 +52,9 @@ OUTPUT_HEIGHT = 244
 INPUT_SIZE = 640
 PREVIEW_WINDOW = "Dataset Capture"
 PREVIEW_HEADER_HEIGHT = 82
+HEADER_LAST_COLOR = (110, 255, 110)
+HEADER_PREFIX_COLOR = (0, 215, 255)
+HEADER_FOLDER_COLOR = (255, 190, 80)
 MANUAL_CROP_PRESETS = {
     "1:1  |  224x224 px": (1, 1, 224, 224),
     "4:3  |  224x168 px": (4, 3, 224, 168),
@@ -335,6 +338,7 @@ class ControlPanel:
         self.storage_root = storage_root
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self._capture_requested = False
+        self._yolo_assist_requested = False
         self._quit_requested = False
         self._yolo_enabled = True
         self._full_frame_enabled = False
@@ -350,12 +354,13 @@ class ControlPanel:
         self.preview_photo = None
         self._storage_snapshot = ()
         self._active_pane = "image"
+        self._capture_hotkey_bindtag = f"DatasetCaptureHotkeys{id(self)}"
 
         tk.Label(self.root, text="Filename prefix:").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
         self.prefix_var = tk.StringVar(value=self._prefix)
         tk.Entry(self.root, textvariable=self.prefix_var, width=24).grid(row=0, column=1, padx=8, pady=(8, 4), sticky="we")
         tk.Button(self.root, text="Update Name", command=self._update_prefix).grid(row=1, column=0, padx=8, pady=2, sticky="we")
-        tk.Button(self.root, text="Capture", command=self._request_capture).grid(row=1, column=1, padx=8, pady=2, sticky="we")
+        tk.Button(self.root, text="Capture (Ctrl+Space)", command=self._request_capture).grid(row=1, column=1, padx=8, pady=2, sticky="we")
         self.yolo_button = tk.Button(self.root, text="YOLO: ON", command=self._toggle_yolo)
         self.yolo_button.grid(row=2, column=0, padx=(8, 4), pady=2, sticky="we")
         self.full_frame_button = tk.Button(self.root, text="Full Frame: OFF", command=self._toggle_full_frame)
@@ -393,11 +398,19 @@ class ControlPanel:
             row=6, column=1, padx=8, pady=0, sticky="we"
         )
         tk.Button(self.root, text="Center Crop", command=self._center_manual_crop).grid(row=7, column=0, columnspan=2, padx=8, pady=2, sticky="we")
-        tk.Button(self.root, text="File Manager", command=self._open_file_manager).grid(row=8, column=0, columnspan=2, padx=8, pady=2, sticky="we")
+        self.yolo_assist_button = tk.Button(
+            self.root,
+            text="YOLO Assist (Place Once)",
+            command=self._request_yolo_assist,
+        )
+        self.yolo_assist_button.grid(row=8, column=0, columnspan=2, padx=8, pady=2, sticky="we")
+        tk.Button(self.root, text="File Manager", command=self._open_file_manager).grid(row=9, column=0, columnspan=2, padx=8, pady=2, sticky="we")
         self.folder_var = tk.StringVar(value=f"Save folder: {self._folder}")
-        tk.Label(self.root, textvariable=self.folder_var).grid(row=9, column=0, columnspan=2, padx=8, pady=2, sticky="w")
-        tk.Button(self.root, text="Quit", command=self._request_quit).grid(row=10, column=0, columnspan=2, padx=8, pady=(2, 6), sticky="we")
+        tk.Label(self.root, textvariable=self.folder_var).grid(row=10, column=0, columnspan=2, padx=8, pady=2, sticky="w")
+        tk.Button(self.root, text="Quit", command=self._request_quit).grid(row=11, column=0, columnspan=2, padx=8, pady=(2, 6), sticky="we")
         self.root.protocol("WM_DELETE_WINDOW", self._request_quit)
+        self.root.bind_class(self._capture_hotkey_bindtag, "<Control-space>", self._request_capture)
+        self._install_capture_hotkey(self.root)
 
     def _update_prefix(self) -> None:
         previous_prefix = self._prefix
@@ -406,9 +419,20 @@ class ControlPanel:
         save_state(load_last_sequence(), self._prefix, self._folder)
         log_action(f"Updated filename prefix: {previous_prefix} -> {self._prefix}")
 
-    def _request_capture(self) -> None:
+    def _request_capture(self, event=None) -> str | None:
         self._capture_requested = True
-        log_action("Capture button pressed")
+        log_action("Ctrl+Spacebar pressed" if event is not None else "Capture button pressed")
+        return "break" if event is not None else None
+
+    def _install_capture_hotkey(self, window: tk.Misc) -> None:
+        """Give every widget in an app window the same capture shortcut."""
+        pending = [window]
+        while pending:
+            widget = pending.pop()
+            tags = widget.bindtags()
+            if self._capture_hotkey_bindtag not in tags:
+                widget.bindtags((self._capture_hotkey_bindtag, *tags))
+            pending.extend(widget.winfo_children())
 
     def _toggle_yolo(self) -> None:
         self._yolo_enabled = not self._yolo_enabled
@@ -463,6 +487,41 @@ class ControlPanel:
         self.crop_x_label_var.set("Crop X: 0")
         self.crop_y_label_var.set("Crop Y: 0")
         log_action("Manual crop position centered")
+
+    def _request_yolo_assist(self) -> None:
+        self._yolo_assist_requested = True
+        self.yolo_assist_button.configure(text="YOLO Assist: Detecting...")
+        log_action("YOLO manual-crop assist requested")
+
+    def consume_yolo_assist_request(self) -> bool:
+        requested = self._yolo_assist_requested
+        self._yolo_assist_requested = False
+        return requested
+
+    def apply_yolo_assist(self, coverage_percent: int, offset_x_percent: int, offset_y_percent: int) -> None:
+        """Apply a one-shot detection result to the editable manual controls."""
+        self.crop_scale_var.set(coverage_percent)
+        self.crop_x_var.set(offset_x_percent)
+        self.crop_y_var.set(offset_y_percent)
+        self.crop_size_label_var.set(f"Crop size: {coverage_percent}%")
+        self.crop_x_label_var.set(f"Crop X: {offset_x_percent}")
+        self.crop_y_label_var.set(f"Crop Y: {offset_y_percent}")
+        self._yolo_enabled = False
+        self._full_frame_enabled = False
+        self.yolo_button.configure(text="YOLO: OFF")
+        self.full_frame_button.configure(text="Full Frame: OFF")
+        self.yolo_assist_button.configure(text="YOLO Assist: Crop Fixed")
+        self.root.after(1600, self._reset_yolo_assist_button)
+
+    def yolo_assist_failed(self, status: str = "No Object") -> None:
+        self.yolo_assist_button.configure(text=f"YOLO Assist: {status}")
+        self.root.after(1600, self._reset_yolo_assist_button)
+
+    def _reset_yolo_assist_button(self) -> None:
+        try:
+            self.yolo_assist_button.configure(text="YOLO Assist (Place Once)")
+        except tk.TclError:
+            pass
 
     def _request_quit(self) -> None:
         self._quit_requested = True
@@ -538,8 +597,8 @@ class ControlPanel:
         tk.Button(folder_buttons, text="Use for Capture", command=self._select_save_folder).pack(fill="x", pady=3)
         image_buttons = tk.Frame(self.manager)
         image_buttons.grid(row=2, column=1, padx=8, pady=6)
-        tk.Button(image_buttons, text="Rename Selected", command=self._rename_selected).pack(fill="x")
-        tk.Button(image_buttons, text="Delete Selected", command=self._delete_selected).pack(fill="x", pady=3)
+        tk.Button(image_buttons, text="Rename Selected", command=self._rename_images).pack(fill="x")
+        tk.Button(image_buttons, text="Delete Selected", command=self._delete_image).pack(fill="x", pady=3)
 
         self.folder_menu = tk.Menu(self.manager, tearoff=False)
         self.folder_menu.add_command(label="New Folder", command=self._create_folder)
@@ -555,6 +614,7 @@ class ControlPanel:
         self.image_menu.add_command(label="Delete Selected Image(s)", command=self._delete_image)
         self._refresh_manager(select_folder=self._folder)
         self._storage_snapshot = self._make_storage_snapshot()
+        self._install_capture_hotkey(self.manager)
         self.manager.after(500, self._auto_refresh_manager)
         log_action("Opened storage file manager")
 
@@ -571,6 +631,27 @@ class ControlPanel:
         finally:
             self.manager = None
         log_action("Closed storage file manager")
+
+    def _restore_manager_grab(self) -> None:
+        """Restore modality after a nested Tk dialog releases its grab."""
+        try:
+            if self.manager is not None and self.manager.winfo_exists():
+                self.manager.grab_set()
+        except tk.TclError:
+            pass
+
+    def _ask_manager_string(self, title: str, prompt: str, initialvalue: str = "") -> str | None:
+        try:
+            return simpledialog.askstring(
+                title,
+                prompt,
+                initialvalue=initialvalue,
+                parent=self.manager,
+            )
+        finally:
+            # simpledialog takes the grab from its parent but does not restore
+            # the parent's previous grab when it closes.
+            self._restore_manager_grab()
 
     def _folders(self) -> List[str]:
         return sorted(path.name for path in self.storage_root.iterdir() if path.is_dir())
@@ -701,7 +782,7 @@ class ControlPanel:
             self._storage_snapshot = snapshot
         self.manager.after(500, self._auto_refresh_manager)
 
-    def _refresh_images(self) -> None:
+    def _refresh_images(self, select_names: List[str] | None = None) -> None:
         if self.image_list is None:
             return
         self.image_list.delete(0, tk.END)
@@ -712,6 +793,20 @@ class ControlPanel:
                     self.image_list.insert(tk.END, path.name)
         self._apply_alternating_rows(self.image_list)
         self._clear_preview()
+        if select_names:
+            wanted = set(select_names)
+            selected_indices = [
+                index
+                for index, name in enumerate(self.image_list.get(0, tk.END))
+                if name in wanted
+            ]
+            for index in selected_indices:
+                self.image_list.selection_set(index)
+            if selected_indices:
+                first = selected_indices[0]
+                self.image_list.activate(first)
+                self.image_list.see(first)
+                self._image_selected()
 
     def _folder_selected(self, _event=None) -> None:
         self._active_pane = "folder"
@@ -752,7 +847,7 @@ class ControlPanel:
             self.preview_info_var.set("")
 
     def _create_folder(self) -> None:
-        value = simpledialog.askstring("New Folder", "Folder name:", parent=self.manager)
+        value = self._ask_manager_string("New Folder", "Folder name:")
         if value is None:
             return
         name = sanitize_folder_name(value)
@@ -770,7 +865,7 @@ class ControlPanel:
             messagebox.showinfo("Select folder", "Select exactly one folder to rename.", parent=self.manager)
             return
         old_name = selected[0]
-        value = simpledialog.askstring("Rename Folder", "New folder name:", initialvalue=old_name, parent=self.manager)
+        value = self._ask_manager_string("Rename Folder", "New folder name:", initialvalue=old_name)
         if value is None:
             return
         new_name = sanitize_folder_name(value)
@@ -835,24 +930,37 @@ class ControlPanel:
         if not sources:
             messagebox.showinfo("Select images", "Select one or more images first.", parent=self.manager)
             return
-        value = simpledialog.askstring(
-            "Rename Selected Images",
-            "New format/prefix:\nExamples: image  -> image1.jpg\n              image_{n} -> image_1.jpg",
-            initialvalue=self._prefix,
-            parent=self.manager,
-        )
+        single_image = len(sources) == 1
+        if single_image:
+            title = "Rename Image"
+            prompt = "New filename (press Enter to rename):"
+            initialvalue = sources[0].name
+        else:
+            title = "Rename Selected Images"
+            prompt = (
+                "New format/prefix (press Enter to rename):\n"
+                "Examples: image  -> image1.jpg\n"
+                "              image_{n} -> image_1.jpg"
+            )
+            initialvalue = self._prefix
+        value = self._ask_manager_string(title, prompt, initialvalue=initialvalue)
         if value is None:
             return
-        pattern = Path(value.strip()).name
-        if not pattern:
+        pattern = Path(value.strip().replace("\\", "/")).name
+        if pattern in {"", ".", ".."}:
             return
 
-        destinations = []
-        for number, source in enumerate(sources, start=1):
-            stem_pattern = Path(pattern).stem if Path(pattern).suffix else pattern
-            stem = stem_pattern.replace("{n}", str(number)) if "{n}" in stem_pattern else f"{stem_pattern}{number}"
-            suffix = Path(pattern).suffix or source.suffix
-            destinations.append(source.parent / f"{stem}{suffix}")
+        if single_image:
+            source = sources[0]
+            filename = pattern if Path(pattern).suffix else f"{pattern}{source.suffix}"
+            destinations = [source.parent / filename]
+        else:
+            destinations = []
+            for number, source in enumerate(sources, start=1):
+                stem_pattern = Path(pattern).stem if Path(pattern).suffix else pattern
+                stem = stem_pattern.replace("{n}", str(number)) if "{n}" in stem_pattern else f"{stem_pattern}{number}"
+                suffix = Path(pattern).suffix or source.suffix
+                destinations.append(source.parent / f"{stem}{suffix}")
 
         if len(set(destinations)) != len(destinations):
             messagebox.showerror("Duplicate names", "The format creates duplicate filenames.", parent=self.manager)
@@ -867,12 +975,8 @@ class ControlPanel:
             )
             return
 
-        if not messagebox.askyesno(
-            "Confirm Rename",
-            f"Rename {len(sources)} selected image(s) using format '{pattern}'?",
-            parent=self.manager,
-        ):
-            log_action(f"Cancelled bulk rename of {len(sources)} image(s)")
+        if sources == destinations:
+            self._refresh_images(select_names=[path.name for path in sources])
             return
 
         temporary_paths = []
@@ -882,8 +986,12 @@ class ControlPanel:
             temporary_paths.append(temporary)
         for temporary, destination in zip(temporary_paths, destinations):
             temporary.rename(destination)
-        log_action(f"Renamed {len(sources)} image(s) using format: {pattern}")
-        self._refresh_images()
+        if single_image:
+            log_action(f"Renamed image: {sources[0].name} -> {destinations[0].name}")
+        else:
+            log_action(f"Renamed {len(sources)} image(s) using format: {pattern}")
+        self._storage_snapshot = self._make_storage_snapshot()
+        self._refresh_images(select_names=[path.name for path in destinations])
 
     def _delete_image(self) -> None:
         paths = self._selected_image_paths()
@@ -960,13 +1068,97 @@ def centered_crop_box(
     if crop_height > max_height:
         crop_height = max_height
         crop_width = int(round(crop_height * ratio))
-    center_x1 = (frame_width - crop_width) // 2
-    center_y1 = (frame_height - crop_height) // 2
-    x1 = center_x1 + int(round(max(-1.0, min(1.0, offset_x)) * center_x1))
-    y1 = center_y1 + int(round(max(-1.0, min(1.0, offset_y)) * center_y1))
-    x1 = max(0, min(x1, frame_width - crop_width))
-    y1 = max(0, min(y1, frame_height - crop_height))
+    x1 = _manual_crop_axis_start(frame_width, crop_width, offset_x)
+    y1 = _manual_crop_axis_start(frame_height, crop_height, offset_y)
     return x1, y1, x1 + crop_width, y1 + crop_height
+
+
+def _manual_crop_axis_start(frame_length: int, crop_length: int, offset: float) -> int:
+    """Map -1..1 to both exact frame edges while keeping zero centered."""
+    offset = max(-1.0, min(1.0, offset))
+    max_start = frame_length - crop_length
+    centered_start = max_start // 2
+    travel = centered_start if offset < 0 else max_start - centered_start
+    return max(0, min(centered_start + int(round(offset * travel)), max_start))
+
+
+def _containing_manual_axis_offset(
+    frame_length: int,
+    crop_length: int,
+    target_start: int,
+    target_end: int,
+) -> int | None:
+    """Return the closest integer slider value that fully contains an axis."""
+    max_start = frame_length - crop_length
+    lowest_start = max(0, target_end - crop_length)
+    highest_start = min(target_start, max_start)
+    if lowest_start > highest_start:
+        return None
+    desired_start = int(round((target_start + target_end - crop_length) / 2.0))
+    desired_start = max(lowest_start, min(desired_start, highest_start))
+    best = None
+    for offset_percent in range(-100, 101):
+        start = _manual_crop_axis_start(frame_length, crop_length, offset_percent / 100.0)
+        if lowest_start <= start <= highest_start:
+            score = (abs(start - desired_start), abs(offset_percent), offset_percent)
+            if best is None or score < best[0]:
+                best = (score, offset_percent)
+    return None if best is None else best[1]
+
+
+def yolo_assisted_manual_crop_settings(
+    frame: np.ndarray,
+    ratio_width: int,
+    ratio_height: int,
+    bbox: Tuple[int, int, int, int],
+) -> Tuple[int, int, int] | None:
+    """Place the editable manual crop around one YOLO box exactly once."""
+    frame_height, frame_width = frame.shape[:2]
+    target_x1, target_y1, target_x2, target_y2 = bbox
+    start_percent = 30
+
+    for coverage_percent in range(start_percent, 101):
+        base_box = centered_crop_box(
+            frame,
+            ratio_width,
+            ratio_height,
+            coverage_percent / 100.0,
+        )
+        crop_width = base_box[2] - base_box[0]
+        crop_height = base_box[3] - base_box[1]
+        if crop_width < target_x2 - target_x1 or crop_height < target_y2 - target_y1:
+            continue
+        offset_x = _containing_manual_axis_offset(
+            frame_width,
+            crop_width,
+            target_x1,
+            target_x2,
+        )
+        offset_y = _containing_manual_axis_offset(
+            frame_height,
+            crop_height,
+            target_y1,
+            target_y2,
+        )
+        if offset_x is None or offset_y is None:
+            continue
+        fitted_box = centered_crop_box(
+            frame,
+            ratio_width,
+            ratio_height,
+            coverage_percent / 100.0,
+            offset_x / 100.0,
+            offset_y / 100.0,
+        )
+        if (
+            fitted_box[0] <= target_x1
+            and fitted_box[1] <= target_y1
+            and fitted_box[2] >= target_x2
+            and fitted_box[3] >= target_y2
+        ):
+            return coverage_percent, offset_x, offset_y
+
+    return None
 
 
 def draw_manual_crop_preview(frame: np.ndarray, box: Tuple[int, int, int, int], label: str) -> np.ndarray:
@@ -992,23 +1184,17 @@ def make_square_crop(frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> Tupl
     obj_h = max(1, y2 - y1)
     center_x = (x1 + x2) / 2.0
     center_y = (y1 + y2) / 2.0
-    side = max(obj_w, obj_h)
+    side = min(max(obj_w, obj_h), w, h)
     half = side / 2.0
 
     square_x1 = int(round(center_x - half))
     square_y1 = int(round(center_y - half))
-    square_x2 = square_x1 + int(round(side))
-    square_y2 = square_y1 + int(round(side))
-
-    square_x1 = max(0, min(square_x1, w - 1))
-    square_y1 = max(0, min(square_y1, h - 1))
-    square_x2 = min(w, square_x1 + int(round(side)))
-    square_y2 = min(h, square_y1 + int(round(side)))
-
-    # ensure final crop stays valid
-    side_final = max(1, min(square_x2 - square_x1, square_y2 - square_y1))
-    square_x2 = square_x1 + side_final
-    square_y2 = square_y1 + side_final
+    # Shift the square back inside the frame instead of shortening one side.
+    # Shortening used to cut off detections close to an image edge.
+    square_x1 = max(0, min(square_x1, w - side))
+    square_y1 = max(0, min(square_y1, h - side))
+    square_x2 = square_x1 + side
+    square_y2 = square_y1 + side
     return square_x1, square_y1, square_x2, square_y2
 
 
@@ -1053,7 +1239,7 @@ def main() -> None:
     last_saved_filename = "-"
     backend_name = "Picamera2" if is_picam else "OpenCV VideoCapture"
     print(f"[INFO] Camera backend: {backend_name}")
-    print("[INFO] Controls: capture button, update name button, quit button, n=next object, space=save image")
+    print("[INFO] Controls: capture button, Ctrl+Space from app windows, n=next object, space=save from preview")
 
     # WINDOW_GUI_NORMAL removes Qt's pan/zoom/save toolbar from the preview.
     cv2.namedWindow(
@@ -1073,6 +1259,7 @@ def main() -> None:
             current_folder = panel.current_folder()
             yolo_enabled = panel.yolo_enabled()
             full_frame_enabled = panel.full_frame_enabled()
+            yolo_assist_requested = panel.consume_yolo_assist_request()
             crop_preset_name, crop_preset = panel.manual_crop_preset()
             manual_crop_scale = panel.manual_crop_scale()
             manual_crop_offset_x, manual_crop_offset_y = panel.manual_crop_offset()
@@ -1093,7 +1280,47 @@ def main() -> None:
                     print("[ERROR] Camera read failed. Check the camera connection or permissions.")
                     break
 
-            detections = detector.infer(frame) if yolo_enabled else []
+            # Manual YOLO Assist performs inference for this frame only.  Once
+            # its result is copied into the sliders, normal detection is off and
+            # the crop stays fixed until the user moves or resizes it.
+            detections = detector.infer(frame) if (yolo_enabled or yolo_assist_requested) else []
+            if yolo_assist_requested:
+                if detections:
+                    assisted_bbox = detections[selected_index % len(detections)][:4]
+                    assisted_bbox = expand_bbox(frame.shape, assisted_bbox, args.pad)
+                    assisted_settings = yolo_assisted_manual_crop_settings(
+                        frame,
+                        ratio_width,
+                        ratio_height,
+                        assisted_bbox,
+                    )
+                    if assisted_settings is None:
+                        panel.yolo_assist_failed("Does Not Fit")
+                        print(
+                            "[WARN] YOLO object does not fit the selected manual aspect ratio; "
+                            "manual crop was not changed."
+                        )
+                        log_action("YOLO assist skipped because the detected object does not fit")
+                    else:
+                        coverage_percent, offset_x_percent, offset_y_percent = assisted_settings
+                        panel.apply_yolo_assist(
+                            coverage_percent,
+                            offset_x_percent,
+                            offset_y_percent,
+                        )
+                        manual_crop_scale = coverage_percent / 100.0
+                        manual_crop_offset_x = offset_x_percent / 100.0
+                        manual_crop_offset_y = offset_y_percent / 100.0
+                        yolo_enabled = False
+                        full_frame_enabled = False
+                        log_action(
+                            "YOLO assist fixed manual crop at "
+                            f"size={coverage_percent}%, x={offset_x_percent}, y={offset_y_percent}"
+                        )
+                else:
+                    panel.yolo_assist_failed()
+                    print("[WARN] YOLO Assist could not find an object; manual crop was not changed.")
+                    log_action("YOLO assist skipped because no object was detected")
             manual_crop_box = centered_crop_box(
                 frame,
                 ratio_width,
@@ -1124,7 +1351,7 @@ def main() -> None:
                 (9, 19),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
-                (255, 255, 255),
+                HEADER_LAST_COLOR,
                 1,
                 cv2.LINE_AA,
             )
@@ -1134,7 +1361,7 @@ def main() -> None:
                 (9, 42),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
-                (255, 255, 255),
+                HEADER_PREFIX_COLOR,
                 1,
                 cv2.LINE_AA,
             )
@@ -1144,7 +1371,7 @@ def main() -> None:
                 (9, 65),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
-                (255, 255, 255),
+                HEADER_FOLDER_COLOR,
                 1,
                 cv2.LINE_AA,
             )
