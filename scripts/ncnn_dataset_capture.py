@@ -358,7 +358,10 @@ class ControlPanel:
 
         tk.Label(self.root, text="Filename prefix:").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
         self.prefix_var = tk.StringVar(value=self._prefix)
-        tk.Entry(self.root, textvariable=self.prefix_var, width=24).grid(row=0, column=1, padx=8, pady=(8, 4), sticky="we")
+        self.prefix_entry = tk.Entry(self.root, textvariable=self.prefix_var, width=24)
+        self.prefix_entry.grid(row=0, column=1, padx=8, pady=(8, 4), sticky="we")
+        self.prefix_entry.bind("<Return>", self._update_prefix)
+        self.prefix_entry.bind("<KP_Enter>", self._update_prefix)
         tk.Button(self.root, text="Update Name", command=self._update_prefix).grid(row=1, column=0, padx=8, pady=2, sticky="we")
         tk.Button(self.root, text="Capture (Ctrl+Space)", command=self._request_capture).grid(row=1, column=1, padx=8, pady=2, sticky="we")
         self.yolo_button = tk.Button(self.root, text="YOLO: ON", command=self._toggle_yolo)
@@ -412,12 +415,13 @@ class ControlPanel:
         self.root.bind_class(self._capture_hotkey_bindtag, "<Control-space>", self._request_capture)
         self._install_capture_hotkey(self.root)
 
-    def _update_prefix(self) -> None:
+    def _update_prefix(self, event=None) -> str | None:
         previous_prefix = self._prefix
         self._prefix = sanitize_prefix(self.prefix_var.get())
         self.prefix_var.set(self._prefix)
         save_state(load_last_sequence(), self._prefix, self._folder)
         log_action(f"Updated filename prefix: {previous_prefix} -> {self._prefix}")
+        return "break" if event is not None else None
 
     def _request_capture(self, event=None) -> str | None:
         self._capture_requested = True
