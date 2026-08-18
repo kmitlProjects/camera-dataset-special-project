@@ -9,7 +9,7 @@ Features:
 - object detection from NCNN exported YOLO model
 - convert detected box to square 1:1 crop that fully contains the object
 - expand crop slightly so object edges are less likely to be cut off
-- save final crop as 224x244 pixels
+- save YOLO crops as square 224x224 pixels
 - persistent sequence counter saved to disk
 """
 
@@ -48,7 +48,7 @@ STATE_FILE = Path.home() / ".dataset_capture_state.json"
 DEFAULT_PREFIX = "image"
 DEFAULT_FOLDER = "default"
 OUTPUT_WIDTH = 224
-OUTPUT_HEIGHT = 244
+OUTPUT_HEIGHT = 224
 INPUT_SIZE = 640
 PREVIEW_WINDOW = "Dataset Capture"
 PREVIEW_HEADER_HEIGHT = 82
@@ -57,9 +57,6 @@ HEADER_PREFIX_COLOR = (0, 215, 255)
 HEADER_FOLDER_COLOR = (255, 190, 80)
 MANUAL_CROP_PRESETS = {
     "1:1  |  224x224 px": (1, 1, 224, 224),
-    "4:3  |  224x168 px": (4, 3, 224, 168),
-    "3:4  |  168x224 px": (3, 4, 168, 224),
-    "Custom  |  224x244 px": (224, 244, 224, 244),
 }
 
 
@@ -1202,11 +1199,30 @@ def make_square_crop(frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> Tupl
     return square_x1, square_y1, square_x2, square_y2
 
 
-def save_capture(frame: np.ndarray, output_dir: Path, prefix: str, last_sequence: int) -> int:
+def save_capture(
+    frame: np.ndarray,
+    output_dir: Path,
+    prefix: str,
+    last_sequence: int,
+    expected_size: Tuple[int, int] | None = None,
+) -> int:
+    if frame.size == 0:
+        raise ValueError("Cannot save an empty capture")
+    if expected_size is not None:
+        expected_width, expected_height = expected_size
+        actual_height, actual_width = frame.shape[:2]
+        if (actual_width, actual_height) != (expected_width, expected_height):
+            raise ValueError(
+                "Capture size mismatch: "
+                f"expected {expected_width}x{expected_height}, "
+                f"got {actual_width}x{actual_height}"
+            )
     filename = f"{sanitize_prefix(prefix)}{last_sequence}.jpg"
     dst = output_dir / filename
-    cv2.imwrite(str(dst), frame)
-    log_action(f"Saved image: {dst}")
+    if not cv2.imwrite(str(dst), frame):
+        raise OSError(f"Could not save image: {dst}")
+    height, width = frame.shape[:2]
+    log_action(f"Saved image ({width}x{height}): {dst}")
     return last_sequence
 
 
@@ -1446,7 +1462,13 @@ def main() -> None:
                     resize_crop = cv2.resize(capture_frame, output_size, interpolation=cv2.INTER_LINEAR)
                 current_prefix = panel.current_prefix()
                 next_sequence = next_available_sequence(output_dir, current_prefix)
-                save_capture(resize_crop, output_dir, current_prefix, next_sequence)
+                save_capture(
+                    resize_crop,
+                    output_dir,
+                    current_prefix,
+                    next_sequence,
+                    expected_size=None if full_frame_enabled else output_size,
+                )
                 last_saved_filename = f"{current_prefix}{next_sequence}.jpg"
                 save_state(next_sequence, current_prefix, current_folder)
 
@@ -1477,7 +1499,13 @@ def main() -> None:
                     resize_crop = cv2.resize(capture_frame, output_size, interpolation=cv2.INTER_LINEAR)
                 current_prefix = panel.current_prefix()
                 next_sequence = next_available_sequence(output_dir, current_prefix)
-                save_capture(resize_crop, output_dir, current_prefix, next_sequence)
+                save_capture(
+                    resize_crop,
+                    output_dir,
+                    current_prefix,
+                    next_sequence,
+                    expected_size=None if full_frame_enabled else output_size,
+                )
                 last_saved_filename = f"{current_prefix}{next_sequence}.jpg"
                 save_state(next_sequence, current_prefix, current_folder)
 

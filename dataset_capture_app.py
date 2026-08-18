@@ -6,7 +6,7 @@ Features:
 - YOLO-based object detection
 - square 1:1 crop around each detected object
 - ensure detected object remains inside crop
-- save final images at 224x244 pixels
+- save final images at 224x224 pixels
 - persistent sequence numbering by prefix
 - save directory selection
 
@@ -46,7 +46,7 @@ except Exception:  # pragma: no cover
 STATE_FILE = Path.home() / ".dataset_capture_state.json"
 DEFAULT_PREFIX = "pill"
 OUTPUT_WIDTH = 224
-OUTPUT_HEIGHT = 244
+OUTPUT_HEIGHT = 224
 
 
 def ensure_model_ready() -> bool:
