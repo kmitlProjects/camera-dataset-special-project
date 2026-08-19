@@ -4,4 +4,3 @@ __pycache__/
 *.pyo
 *.log
 capture_run.log
-storage/
