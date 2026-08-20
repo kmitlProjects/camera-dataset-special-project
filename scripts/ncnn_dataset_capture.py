@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import tkinter as tk
 import uuid
@@ -294,6 +295,7 @@ def save_state(last_sequence: int, last_prefix: str, last_folder: str) -> None:
 
 def sanitize_prefix(value: str) -> str:
     cleaned = value.strip().replace(" ", "_").replace("/", "_").replace("\\", "_")
+    cleaned = re.sub(r"_+", "_", cleaned)
     return cleaned if cleaned else DEFAULT_PREFIX
 
 
