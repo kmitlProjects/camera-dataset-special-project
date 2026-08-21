@@ -53,6 +53,8 @@ OUTPUT_HEIGHT = 224
 INPUT_SIZE = 640
 PREVIEW_WINDOW = "Dataset Capture"
 PREVIEW_HEADER_HEIGHT = 82
+LAST_CAPTURE_PREVIEW_WIDTH = 160
+LAST_CAPTURE_PREVIEW_HEIGHT = 120
 HEADER_LAST_COLOR = (110, 255, 110)
 HEADER_PREFIX_COLOR = (0, 215, 255)
 HEADER_FOLDER_COLOR = (255, 190, 80)
@@ -351,9 +353,12 @@ class ControlPanel:
         self.preview_label = None
         self.preview_info_var = None
         self.preview_photo = None
+        self.last_capture_photo = None
+        self._last_capture_path = None
         self._storage_snapshot = ()
         self._active_pane = "image"
         self._capture_hotkey_bindtag = f"DatasetCaptureHotkeys{id(self)}"
+        self._preview_hotkey_bindtag = f"DatasetPreviewHotkeys{id(self)}"
 
         tk.Label(self.root, text="Filename prefix:").grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
         self.prefix_var = tk.StringVar(value=self._prefix)
@@ -409,10 +414,63 @@ class ControlPanel:
         tk.Button(self.root, text="File Manager", command=self._open_file_manager).grid(row=9, column=0, columnspan=2, padx=8, pady=2, sticky="we")
         self.folder_var = tk.StringVar(value=f"Save folder: {self._folder}")
         tk.Label(self.root, textvariable=self.folder_var).grid(row=10, column=0, columnspan=2, padx=8, pady=2, sticky="w")
-        tk.Button(self.root, text="Quit", command=self._request_quit).grid(row=11, column=0, columnspan=2, padx=8, pady=(2, 6), sticky="we")
+        self.last_capture_name_var = tk.StringVar(value="No image saved yet")
+        last_capture_section = tk.Frame(self.root)
+        last_capture_section.grid(row=11, column=0, columnspan=2, padx=8, pady=(2, 3), sticky="we")
+        preview_navigation = tk.Frame(last_capture_section)
+        preview_navigation.pack(fill=tk.X, pady=(0, 3))
+        tk.Button(
+            preview_navigation,
+            text="↑ Older",
+            command=self._show_previous_capture,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        tk.Button(
+            preview_navigation,
+            text="↓ Newer",
+            command=self._show_next_capture,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+        self.last_capture_canvas = tk.Canvas(
+            last_capture_section,
+            width=LAST_CAPTURE_PREVIEW_WIDTH,
+            height=LAST_CAPTURE_PREVIEW_HEIGHT,
+            background="#111111",
+            highlightbackground="#888888",
+            highlightthickness=1,
+            takefocus=True,
+        )
+        self.last_capture_canvas.pack()
+        self.last_capture_canvas.bind(
+            "<Button-1>",
+            lambda _event: self.last_capture_canvas.focus_set(),
+        )
+        self.last_capture_canvas.create_text(
+            LAST_CAPTURE_PREVIEW_WIDTH // 2,
+            LAST_CAPTURE_PREVIEW_HEIGHT // 2,
+            text="No image saved yet",
+            fill="#dddddd",
+        )
+        tk.Label(
+            last_capture_section,
+            textvariable=self.last_capture_name_var,
+            anchor="center",
+            justify=tk.CENTER,
+            wraplength=320,
+            height=2,
+        ).pack(fill=tk.X, pady=(1, 0))
+        tk.Button(self.root, text="Quit", command=self._request_quit).grid(row=12, column=0, columnspan=2, padx=8, pady=(2, 6), sticky="we")
         self.root.protocol("WM_DELETE_WINDOW", self._request_quit)
         self.root.bind_class(self._capture_hotkey_bindtag, "<Control-space>", self._request_capture)
+        self.root.bind_class(self._preview_hotkey_bindtag, "<Up>", self._show_previous_capture)
+        self.root.bind_class(self._preview_hotkey_bindtag, "<Down>", self._show_next_capture)
+        self.root.bind_class(self._preview_hotkey_bindtag, "<Shift-Up>", self._show_oldest_capture)
+        self.root.bind_class(self._preview_hotkey_bindtag, "<Shift-Down>", self._show_newest_capture)
+        self.root.bind_class(
+            self._preview_hotkey_bindtag,
+            "<Control-BackSpace>",
+            self._delete_previewed_capture,
+        )
         self._install_capture_hotkey(self.root)
+        self._install_preview_hotkeys(self.root)
 
     def _update_prefix(self, event=None) -> str | None:
         previous_prefix = self._prefix
@@ -429,12 +487,20 @@ class ControlPanel:
 
     def _install_capture_hotkey(self, window: tk.Misc) -> None:
         """Give every widget in an app window the same capture shortcut."""
+        self._install_hotkey_bindtag(window, self._capture_hotkey_bindtag)
+
+    def _install_preview_hotkeys(self, window: tk.Misc) -> None:
+        """Install preview shortcuts before widget bindings in the control window."""
+        self._install_hotkey_bindtag(window, self._preview_hotkey_bindtag)
+
+    @staticmethod
+    def _install_hotkey_bindtag(window: tk.Misc, bindtag: str) -> None:
         pending = [window]
         while pending:
             widget = pending.pop()
             tags = widget.bindtags()
-            if self._capture_hotkey_bindtag not in tags:
-                widget.bindtags((self._capture_hotkey_bindtag, *tags))
+            if bindtag not in tags:
+                widget.bindtags((bindtag, *tags))
             pending.extend(widget.winfo_children())
 
     def _toggle_yolo(self) -> None:
@@ -540,6 +606,188 @@ class ControlPanel:
         path = self.storage_root / self._folder
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _set_last_capture_message(self, text: str, color: str = "#dddddd") -> None:
+        self.last_capture_photo = None
+        self.last_capture_canvas.delete("all")
+        self.last_capture_canvas.create_text(
+            LAST_CAPTURE_PREVIEW_WIDTH // 2,
+            LAST_CAPTURE_PREVIEW_HEIGHT // 2,
+            text=text,
+            fill=color,
+        )
+
+    def show_last_capture(self, frame: np.ndarray, path: Path) -> None:
+        """Show a saved frame and its filename without resizing the control window."""
+        self._last_capture_path = path
+        self.last_capture_name_var.set(path.name)
+        if frame.size == 0:
+            self._set_last_capture_message("Preview unavailable", "#ffaaaa")
+            return
+        try:
+            height, width = frame.shape[:2]
+            scale = min(
+                LAST_CAPTURE_PREVIEW_WIDTH / max(width, 1),
+                LAST_CAPTURE_PREVIEW_HEIGHT / max(height, 1),
+                1.0,
+            )
+            preview_width = max(1, int(round(width * scale)))
+            preview_height = max(1, int(round(height * scale)))
+            if (preview_width, preview_height) == (width, height):
+                resized = frame
+            else:
+                resized = cv2.resize(
+                    frame,
+                    (preview_width, preview_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            if resized.ndim == 2:
+                rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+            elif resized.ndim == 3 and resized.shape[2] == 4:
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGRA2RGB)
+            elif resized.ndim == 3 and resized.shape[2] == 3:
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            else:
+                raise ValueError(f"Unsupported preview shape: {resized.shape}")
+
+            ppm = f"P6 {preview_width} {preview_height} 255\n".encode("ascii") + rgb.tobytes()
+            self.last_capture_photo = tk.PhotoImage(data=ppm, format="PPM")
+            self.last_capture_canvas.delete("all")
+            self.last_capture_canvas.create_image(
+                LAST_CAPTURE_PREVIEW_WIDTH // 2,
+                LAST_CAPTURE_PREVIEW_HEIGHT // 2,
+                image=self.last_capture_photo,
+                anchor=tk.CENTER,
+            )
+        except (cv2.error, tk.TclError, ValueError) as exc:
+            self._set_last_capture_message("Preview unavailable", "#ffaaaa")
+            log_action(f"Could not update last saved preview: {exc}")
+
+    def _capture_preview_files(self) -> List[Path]:
+        """Return images in the active capture folder from oldest to newest."""
+        files = []
+        try:
+            for path in self.current_output_dir().iterdir():
+                if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                    continue
+                try:
+                    files.append((path.stat().st_mtime_ns, path.name.casefold(), path))
+                except OSError:
+                    continue
+        except OSError as exc:
+            log_action(f"Could not list capture previews: {exc}")
+            return []
+        return [path for _, _, path in sorted(files)]
+
+    @staticmethod
+    def _preview_navigation_blocked(event) -> bool:
+        """Keep arrow-key behavior for controls other than the filename entry."""
+        return isinstance(
+            event.widget,
+            (tk.Scale, tk.Listbox, tk.Text, tk.Spinbox, tk.Menubutton, tk.Menu),
+        )
+
+    def _show_capture_path(self, path: Path) -> None:
+        image = cv2.imread(str(path))
+        if image is None:
+            self._last_capture_path = path
+            self.last_capture_name_var.set(path.name)
+            self._set_last_capture_message("Cannot read image", "#ffaaaa")
+            log_action(f"Could not read capture preview: {path}")
+            return
+        self.show_last_capture(image, path)
+        log_action(f"Previewed capture: {path}")
+
+    def _navigate_capture_preview(self, offset: int, event=None) -> str | None:
+        if event is not None and self._preview_navigation_blocked(event):
+            return None
+        paths = self._capture_preview_files()
+        if not paths:
+            self._last_capture_path = None
+            self.last_capture_name_var.set("No images in current folder")
+            self._set_last_capture_message("No images")
+        elif self._last_capture_path not in paths:
+            self._show_capture_path(paths[-1])
+        else:
+            current_index = paths.index(self._last_capture_path)
+            target_index = max(0, min(current_index + offset, len(paths) - 1))
+            self._show_capture_path(paths[target_index])
+        return "break" if event is not None else None
+
+    def _show_previous_capture(self, event=None) -> str | None:
+        return self._navigate_capture_preview(-1, event)
+
+    def _show_next_capture(self, event=None) -> str | None:
+        return self._navigate_capture_preview(1, event)
+
+    def _show_capture_boundary(self, newest: bool, event=None) -> str | None:
+        paths = self._capture_preview_files()
+        if not paths:
+            self._last_capture_path = None
+            self.last_capture_name_var.set("No images in current folder")
+            self._set_last_capture_message("No images")
+        else:
+            self._show_capture_path(paths[-1] if newest else paths[0])
+        return "break" if event is not None else None
+
+    def _show_oldest_capture(self, event=None) -> str | None:
+        return self._show_capture_boundary(False, event)
+
+    def _show_newest_capture(self, event=None) -> str | None:
+        return self._show_capture_boundary(True, event)
+
+    def _delete_previewed_capture(self, event=None) -> str | None:
+        path = self._last_capture_path
+        if path is None or not path.is_file():
+            messagebox.showinfo(
+                "Delete Previewed Image",
+                "There is no previewed image to delete.",
+                parent=self.root,
+            )
+            return "break" if event is not None else None
+
+        paths_before_delete = self._capture_preview_files()
+        try:
+            deleted_index = paths_before_delete.index(path)
+        except ValueError:
+            deleted_index = -1
+
+        confirmed = messagebox.askyesno(
+            "Delete Previewed Image",
+            f"Delete this image permanently?\n\n{path.name}\n\nPress Enter to confirm.",
+            icon="warning",
+            default=messagebox.YES,
+            parent=self.root,
+        )
+        if not confirmed:
+            log_action(f"Cancelled deletion of previewed image: {path}")
+            return "break" if event is not None else None
+
+        try:
+            path.unlink()
+        except OSError as exc:
+            messagebox.showerror(
+                "Delete Previewed Image",
+                f"Could not delete the image:\n{path.name}\n\n{exc}",
+                parent=self.root,
+            )
+            log_action(f"Could not delete previewed image: {path}: {exc}")
+            return "break" if event is not None else None
+
+        log_action(f"Deleted previewed image: {path}")
+        remaining_paths = self._capture_preview_files()
+        if remaining_paths:
+            if deleted_index < 0:
+                next_index = len(remaining_paths) - 1
+            else:
+                next_index = min(deleted_index, len(remaining_paths) - 1)
+            self._show_capture_path(remaining_paths[next_index])
+        else:
+            self._last_capture_path = None
+            self.last_capture_name_var.set("No images in current folder")
+            self._set_last_capture_message("No images")
+        return "break" if event is not None else None
 
     def consume_capture_request(self) -> bool:
         requested = self._capture_requested
@@ -1472,6 +1720,7 @@ def main() -> None:
                     expected_size=None if full_frame_enabled else output_size,
                 )
                 last_saved_filename = f"{current_prefix}{next_sequence}.jpg"
+                panel.show_last_capture(resize_crop, output_dir / last_saved_filename)
                 save_state(next_sequence, current_prefix, current_folder)
 
             if panel.consume_capture_request():
@@ -1509,6 +1758,7 @@ def main() -> None:
                     expected_size=None if full_frame_enabled else output_size,
                 )
                 last_saved_filename = f"{current_prefix}{next_sequence}.jpg"
+                panel.show_last_capture(resize_crop, output_dir / last_saved_filename)
                 save_state(next_sequence, current_prefix, current_folder)
 
     finally:
